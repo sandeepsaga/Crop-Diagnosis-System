@@ -53,7 +53,7 @@ async def reverse_geocode_state(lat: str, lon: str, client: httpx.AsyncClient) -
     params = {"lat": lat, "lon": lon, "format": "json"}
     # Nominatim requires a descriptive User-Agent per their usage policy — reusing curl UA here would violate
     # their terms, so we identify our app honestly for this specific call.
-    headers = {"User-Agent": "MandiPriceApp/1.0 (contact: gangasandeep222.com)"}
+    headers = {"User-Agent": "MandiPriceApp/1.0 (contact: gangasandeep222@gmail.com)"}
 
     try:
         r = await client.get(url, params=params, headers=headers, timeout=10.0)
@@ -110,13 +110,63 @@ async def _query_mandi(client: httpx.AsyncClient, api_key: str, commodity: str, 
     return None
 
 
+# async def fetch_mandi_prices(crop_name: str, lat: Optional[str] = None, lon: Optional[str] = None) -> Dict[str, Any]:
+#     """
+#     Queries the official Data.gov.in Agmarknet API endpoint for the given crop's mandi prices,
+#     filtered to the caller's state when lat/lon are provided (via reverse geocoding).
+#     Falls back to an unfiltered (nationwide) search if no records are found for that state.
+#     """
+#     fallback = {"modal_price_per_quintal": "Unavailable", "market_name": "Unknown", "status": "no_data"}
+#     api_key = os.environ.get("GOV_INDIA_API_KEY")
+
+#     if not api_key:
+#         logger.error("GOV_INDIA_API_KEY is not set in environment")
+#         return fallback
+
+#     if crop_name.lower() in ["unknown", "young plant", "healthy-plant"]:
+#         return fallback
+
+#     commodity = crop_name.capitalize()
+
+#     async with httpx.AsyncClient(headers=CURL_UA) as client:
+#         # Step 1: figure out the caller's state, if coordinates are available
+#         state = None
+#         if lat and lon:
+#             state = await reverse_geocode_state(lat, lon, client)
+
+#         # Step 2: try state-filtered query first (if we have a state)
+#         if state:
+#             records = await _query_mandi(client, api_key, commodity, state, limit=10)
+#             if records:
+#                 best = records[0]
+#                 return {
+#                     "modal_price_per_quintal": best.get("modal_price", "Unavailable"),
+#                     "market_name": best.get("market", "Local Mandi"),
+#                     "district": best.get("district", "Unknown"),
+#                     "state": best.get("state", state),
+#                     "status": "success"
+#                 }
+#             elif records == []:
+#                 logger.warning(f"[mandi] no records for commodity='{commodity}' in state='{state}', broadening search")
+#             else:
+#                 # records is None -> the call itself failed after retries
+#                 return fallback
+
+#         # Step 3: fallback to nationwide search (no state filter) if state-filtered search found nothing
+#         records = await _query_mandi(client, api_key, commodity, state=None, limit=5)
+#         if records:
+#             best = records[0]
+#             return {
+#                 "modal_price_per_quintal": best.get("modal_price", "Unavailable"),
+#                 "market_name": best.get("market", "Local Mandi"),
+#                 "district": best.get("district", "Unknown"),
+#                 "state": best.get("state", "Unknown"),
+#                 "status": "success_nationwide_fallback"  # flag that this wasn't localized to the user's state
+#             }
+
+#     return fallback
 async def fetch_mandi_prices(crop_name: str, lat: Optional[str] = None, lon: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Queries the official Data.gov.in Agmarknet API endpoint for the given crop's mandi prices,
-    filtered to the caller's state when lat/lon are provided (via reverse geocoding).
-    Falls back to an unfiltered (nationwide) search if no records are found for that state.
-    """
-    fallback = {"modal_price_per_quintal": "Unavailable", "market_name": "Unknown", "status": "no_data"}
+    fallback = {"modal_price_per_quintal": "Unavailable", "market_name": "Unknown", "status": "no_data", "farmer_state": None}
     api_key = os.environ.get("GOV_INDIA_API_KEY")
 
     if not api_key:
@@ -129,12 +179,10 @@ async def fetch_mandi_prices(crop_name: str, lat: Optional[str] = None, lon: Opt
     commodity = crop_name.capitalize()
 
     async with httpx.AsyncClient(headers=CURL_UA) as client:
-        # Step 1: figure out the caller's state, if coordinates are available
         state = None
         if lat and lon:
             state = await reverse_geocode_state(lat, lon, client)
 
-        # Step 2: try state-filtered query first (if we have a state)
         if state:
             records = await _query_mandi(client, api_key, commodity, state, limit=10)
             if records:
@@ -144,15 +192,14 @@ async def fetch_mandi_prices(crop_name: str, lat: Optional[str] = None, lon: Opt
                     "market_name": best.get("market", "Local Mandi"),
                     "district": best.get("district", "Unknown"),
                     "state": best.get("state", state),
+                    "farmer_state": state,          # <-- source of truth for language, always the geocoded value
                     "status": "success"
                 }
             elif records == []:
                 logger.warning(f"[mandi] no records for commodity='{commodity}' in state='{state}', broadening search")
             else:
-                # records is None -> the call itself failed after retries
                 return fallback
 
-        # Step 3: fallback to nationwide search (no state filter) if state-filtered search found nothing
         records = await _query_mandi(client, api_key, commodity, state=None, limit=5)
         if records:
             best = records[0]
@@ -161,63 +208,11 @@ async def fetch_mandi_prices(crop_name: str, lat: Optional[str] = None, lon: Opt
                 "market_name": best.get("market", "Local Mandi"),
                 "district": best.get("district", "Unknown"),
                 "state": best.get("state", "Unknown"),
-                "status": "success_nationwide_fallback"  # flag that this wasn't localized to the user's state
+                "farmer_state": state,              # <-- still the farmer's real geocoded state, NOT the mandi match's state
+                "status": "success_nationwide_fallback"
             }
 
-    return fallback
-# async def fetch_mandi_prices(crop_name: str, lat: Optional[str] = None, lon: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Queries the official Data.gov.in Agmarknet API endpoint.
-    Filters market arrivals based on the parsed crop identity.
-    """
-    fallback = {"modal_price_per_quintal": "Unavailable", "market_name": "Unknown", "status": "no_data"}
-    api_key = os.environ.get("GOV_INDIA_API_KEY")
-
-    if not api_key:
-        logger.error("GOV_INDIA_API_KEY is not set in environment")
-        return fallback
-
-    if crop_name.lower() in ["unknown", "young plant", "healthy-plant"]:
-        return fallback
-
-    resource_id = "9ef84268-d588-465a-a308-a864a43d0070"
-    base_url = f"https://api.data.gov.in/resource/{resource_id}"
-
-    async with httpx.AsyncClient() as client:
-        url = f"{base_url}?api-key={api_key}&format=json&filters[commodity]={crop_name.capitalize()}&limit=1"
-
-        max_retries = 3
-        for attempt in range(1, max_retries + 1):
-            try:
-                response = await client.get(url, timeout=5)
-                logger.info(f"[mandi] attempt={attempt} status={response.status_code}")
-
-                if response.status_code == 200:
-                    res_json = response.json()
-                    records = res_json.get("records", [])
-                    if records:
-                        latest_record = records[0]
-                        return {
-                            "modal_price_per_quintal": latest_record.get("modal_price", "Unavailable"),
-                            "market_name": latest_record.get("market", "Local Mandi"),
-                            "state": latest_record.get("state", "Unknown"),
-                            "status": "success"
-                        }
-                    else:
-                        logger.warning(f"[mandi] no records for commodity='{crop_name.capitalize()}'")
-                        break
-                else:
-                    logger.error(f"[mandi] non-200 response: {response.status_code}")
-                    break
-            except httpx.TimeoutException as e:
-                logger.error(f"[mandi] attempt={attempt} timed out: {type(e).__name__}")
-                if attempt == max_retries:
-                    return fallback
-                await asyncio.sleep(2 * attempt)
-            except Exception as e:
-                logger.error(f"[mandi] error: {type(e).__name__}: {repr(e)}")
-                return fallback
-
+    fallback["farmer_state"] = state
     return fallback
 # async def fetch_mandi_prices(crop_name: str, lat: Optional[str] = None, lon: Optional[str] = None) -> Dict[str, Any]:
 #     """
